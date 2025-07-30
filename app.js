@@ -9,6 +9,10 @@ const PORT = process.env.PORT || 8000;
 // Middleware
 app.use(express.json());
 
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+
 // Configurar logging básico
 const logger = {
     info: (msg) => console.log(`[INFO] ${new Date().toISOString()}: ${msg}`),
@@ -21,20 +25,54 @@ class LiderAviacaoScraper {
         this.driver = null;
     }
 
+    // async setupDriver(headless = true) {
+    //     try {
+    //         const chromeOptions = new chrome.Options();
+
+    //         if (headless) {
+    //             chromeOptions.addArguments('--headless');
+    //         }
+
+    //         chromeOptions.addArguments(
+    //             '--no-sandbox',
+    //             '--disable-dev-shm-usage',
+    //             '--disable-gpu',
+    //             '--window-size=1920,1080',
+    //             '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    //         );
+
+    //         this.driver = await new Builder()
+    //             .forBrowser('chrome')
+    //             .setChromeOptions(chromeOptions)
+    //             .build();
+
+    //         logger.info('Driver configurado com sucesso');
+    //     } catch (error) {
+    //         logger.error(`Erro ao configurar driver: ${error.message}`);
+    //         throw error;
+    //     }
+    // }
+
+    // ... dentro da classe LiderAviacaoScraper
+
     async setupDriver(headless = true) {
         try {
             const chromeOptions = new chrome.Options();
-            
+
             if (headless) {
                 chromeOptions.addArguments('--headless');
             }
-            
+
+            // Criar um diretório temporário único para cada sessão
+            const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-'));
             chromeOptions.addArguments(
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--window-size=1920,1080',
-                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                '--no-first-run', // Adicionado: Evita a tela de primeira execução
+                `--user-data-dir=${userDataDir}` // Adicionado: Diretório de dados de usuário único
             );
 
             this.driver = await new Builder()
@@ -42,10 +80,29 @@ class LiderAviacaoScraper {
                 .setChromeOptions(chromeOptions)
                 .build();
 
+            // Armazenar o caminho para o diretório de dados de usuário temporário
+            this.userDataDir = userDataDir;
+
             logger.info('Driver configurado com sucesso');
         } catch (error) {
             logger.error(`Erro ao configurar driver: ${error.message}`);
             throw error;
+        }
+    }
+
+    async close() {
+        if (this.driver) {
+            await this.driver.quit();
+            this.driver = null;
+            // Remover o diretório de dados de usuário temporário após o fechamento
+            if (this.userDataDir && fs.existsSync(this.userDataDir)) {
+                try {
+                    fs.rmSync(this.userDataDir, { recursive: true, force: true });
+                    logger.info(`Diretório de dados de usuário temporário removido: ${this.userDataDir}`);
+                } catch (err) {
+                    logger.error(`Erro ao remover diretório de dados de usuário temporário: ${err.message}`);
+                }
+            }
         }
     }
 
@@ -56,7 +113,7 @@ class LiderAviacaoScraper {
 
             // Aguardar e preencher campo de usuário
             const usernameField = await this.driver.wait(
-                until.elementLocated(By.name('User')), 
+                until.elementLocated(By.name('User')),
                 10000
             );
             await usernameField.clear();
@@ -76,7 +133,7 @@ class LiderAviacaoScraper {
 
             // Verificar se o login foi bem-sucedido
             const currentUrl = await this.driver.getCurrentUrl();
-            
+
             if (!currentUrl.includes('Login')) {
                 logger.info('Login realizado com sucesso!');
                 return true;
@@ -98,7 +155,7 @@ class LiderAviacaoScraper {
 
             // Aguardar a tabela carregar
             const table = await this.driver.wait(
-                until.elementLocated(By.id('tbGridAcompanhamento')), 
+                until.elementLocated(By.id('tbGridAcompanhamento')),
                 10000
             );
 
@@ -107,7 +164,7 @@ class LiderAviacaoScraper {
             try {
                 const headerRow = await table.findElement(By.css('thead tr'));
                 const headerCells = await headerRow.findElements(By.tagName('th'));
-                
+
                 for (const cell of headerCells) {
                     const text = await cell.getText();
                     headers.push(text.trim());
@@ -117,7 +174,7 @@ class LiderAviacaoScraper {
                 try {
                     const firstRow = await table.findElement(By.tagName('tr'));
                     const headerCells = await firstRow.findElements(By.tagName('td'));
-                    
+
                     for (const cell of headerCells) {
                         const text = await cell.getText();
                         headers.push(text.trim());
@@ -132,7 +189,7 @@ class LiderAviacaoScraper {
             // Extrair dados das linhas
             const data = [];
             let tbody;
-            
+
             try {
                 tbody = await table.findElement(By.tagName('tbody'));
             } catch (error) {
@@ -143,16 +200,16 @@ class LiderAviacaoScraper {
 
             for (const row of rows) {
                 const cells = await row.findElements(By.tagName('td'));
-                
+
                 if (cells.length > 0) {
                     const rowData = {};
-                    
+
                     for (let i = 0; i < cells.length; i++) {
                         const cellText = await cells[i].getText();
                         const header = headers[i] || `Coluna_${i + 1}`;
                         rowData[header] = cellText.trim();
                     }
-                    
+
                     data.push(rowData);
                 }
             }
@@ -203,10 +260,10 @@ app.get('/', (req, res) => {
 
 app.post('/scrape-data', loginValidation, handleValidationErrors, async (req, res) => {
     let scraper = null;
-    
+
     try {
         const { username, password } = req.body;
-        
+
         // Criar nova instância do scraper
         scraper = new LiderAviacaoScraper();
         await scraper.setupDriver(false); // headless = false para debug
@@ -264,10 +321,10 @@ app.get('/health', (req, res) => {
 
 app.post('/test-login', loginValidation, handleValidationErrors, async (req, res) => {
     let scraper = null;
-    
+
     try {
         const { username, password } = req.body;
-        
+
         scraper = new LiderAviacaoScraper();
         await scraper.setupDriver(true); // headless = true para teste rápido
 
