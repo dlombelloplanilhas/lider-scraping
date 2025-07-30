@@ -317,7 +317,7 @@ app.use((error, req, res, next) => {
 
 // Iniciar servidor
 app.listen(PORT, '0.0.0.0', () => {
-    logger.info(`Servidor rodando na porta ${PORT}`);
+    logger.info(`🚀 API rodando em http://localhost:${PORT}/`);
 });
 
 // Graceful shutdown
